@@ -10,6 +10,25 @@
 
 #include <cassert>
 #include "GUIglut.h"
+#include <cstring>  // for memset
+#include <cmath>    // for ceil
+
+// High-resolution font rendering using OpenGL textures
+// Provides smooth scaling at any window size or scale factor
+const int FONT_SCALE = 16;                      // Font resolution multiplier for smooth scaling
+const int VIRTUAL_SCALE = 4;                    // Virtual canvas scale factor
+const int VIRTUAL_WIDTH = 680 * VIRTUAL_SCALE;  // 2720 pixels wide
+const int VIRTUAL_HEIGHT = 540 * VIRTUAL_SCALE; // 2160 pixels tall
+
+// OpenGL texture objects for font rendering
+GLuint fontTextures[256];  // One texture per character
+
+// How HIGH-RESOLUTION TEXTURE scaling works:
+// 1. Generate fonts at 16x resolution (128x320 pixels) as OpenGL textures
+// 2. Render to 2720x2160 virtual canvas using textured quads
+// 3. OpenGL viewport scales virtual canvas to actual window size
+// 4. Linear texture filtering provides smooth scaling at any size
+// ==========================================
 
 tKeyboardFunc GUIglut::GUIKeyboardFunc = nullptr;
 tDisplayFunc  GUIglut::GUIDisplayFunc;
@@ -38,40 +57,87 @@ GUIglut::~GUIglut()
 void
 GUIglut::GUIDisplay(void)
 {
+    // Render characters using OpenGL textured quads for smooth scaling
     GLfloat color[3] = {1.0, 1.0, 0.0}; // amber
     // GLfloat color[3] = {0.0, 1.0, 0.0}; // green
     // GLfloat color[3] = { 1.0, 1.0, 1.0 };  // white
     // GLfloat color[3] = { 0.5, 0.0, 1.0 };  // purple
     // GLfloat color[3] = { 0.0, 0.8, 0.0 };
     // GLfloat color[3] = { 0.9, 0.9, 0.0 };  // amber
-
     glClear(GL_COLOR_BUFFER_BIT);
     glColor3fv(color);
 
-    glRasterPos2i(20, 24 * 20 + 20);
+    // Set up VIRTUAL CANVAS coordinates (high-resolution space)
+    const int VIRTUAL_BORDER = 20 * VIRTUAL_SCALE;  // 80 pixels in virtual space
+    const int VIRTUAL_CHAR_HEIGHT = 20 * VIRTUAL_SCALE;  // 80 pixels in virtual space
 
-    glPushAttrib(GL_LIST_BIT);
-    glListBase(fontOffset_m);
-    glCallLists(26 * H19::GetH19()->cols_c, GL_UNSIGNED_INT, (GLuint*) H19::GetH19()->screen_m);
-    glPopAttrib();
-    glEnable(GL_COLOR_LOGIC_OP);
+    // Render text using textured quads (replaces glCallLists)
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // Render each character as a textured quad
+    // Note: screen_m is column-major: screen_m[col][row], not [row][col]
+    for (int row = 0; row < 25; row++) {
+        for (int col = 0; col < H19::GetH19()->cols_c; col++) {
+            // Access screen data in column-major order: [col][row]
+            GLuint charIndex = H19::GetH19()->screen_m[col][row];
+
+            // Skip empty characters or out of range
+            if (charIndex == 0 || charIndex >= 256) continue;
+
+            // Calculate position in virtual coordinate space
+            float x = VIRTUAL_BORDER + col * 8 * VIRTUAL_SCALE;
+            float y = VIRTUAL_BORDER + (24 - row) * 20 * VIRTUAL_SCALE;
+            float w = 8 * VIRTUAL_SCALE;  // Character width in virtual space
+            float h = 20 * VIRTUAL_SCALE; // Character height in virtual space
+
+            // Bind character texture and render quad
+            glBindTexture(GL_TEXTURE_2D, fontTextures[charIndex]);
+            glBegin(GL_QUADS);
+                glTexCoord2f(0.0f, 0.0f); glVertex2f(x,     y);
+                glTexCoord2f(1.0f, 0.0f); glVertex2f(x + w, y);
+                glTexCoord2f(1.0f, 1.0f); glVertex2f(x + w, y + h);
+                glTexCoord2f(0.0f, 1.0f); glVertex2f(x,     y + h);
+            glEnd();
+        }
+    }
+
+    glDisable(GL_TEXTURE_2D);
+
+    // Render cursor using textured quad (replaces glCallLists)
     if ((!H19::GetH19()->cursorOff_m) && (H19::GetH19()->curCursor_m))
     {
-
-        glRasterPos2i(20 + min(H19::GetH19()->posX_m, 79) * 8,
-                      (24 - H19::GetH19()->posY_m) * 20 + 20);
-
-        glPushAttrib(GL_LIST_BIT);
-        //  glEnable(GL_COLOR_LOGIC_OP);
-        glLogicOp(GL_COPY);
-        glListBase(fontOffset_m);
         GLuint cursor = (H19::GetH19()->cursorBlock_m) ? (128 + 32) : 27;
-        glCallLists(1, GL_UNSIGNED_INT, &cursor);
-        glPopAttrib();
+
+        // Skip if cursor character is out of range
+        if (cursor < 256) {
+            // Calculate cursor position in virtual coordinate space
+            float x = VIRTUAL_BORDER + min(H19::GetH19()->posX_m, 79) * 8 * VIRTUAL_SCALE;
+            float y = VIRTUAL_BORDER + (24 - H19::GetH19()->posY_m) * 20 * VIRTUAL_SCALE;
+            float w = 8 * VIRTUAL_SCALE;  // Cursor width in virtual space
+            float h = 20 * VIRTUAL_SCALE; // Cursor height in virtual space
+
+            // Enable texture and blend for cursor
+            glEnable(GL_TEXTURE_2D);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            // Render cursor as textured quad
+            glBindTexture(GL_TEXTURE_2D, fontTextures[cursor]);
+            glBegin(GL_QUADS);
+                glTexCoord2f(0.0f, 0.0f); glVertex2f(x,     y);
+                glTexCoord2f(1.0f, 0.0f); glVertex2f(x + w, y);
+                glTexCoord2f(1.0f, 1.0f); glVertex2f(x + w, y + h);
+                glTexCoord2f(0.0f, 1.0f); glVertex2f(x,     y + h);
+            glEnd();
+
+            glDisable(GL_TEXTURE_2D);
+        }
     }
 
     glLogicOp(GL_COPY);
+
     glutSwapBuffers();
 
     return;
@@ -87,8 +153,8 @@ GUIglut::InitGUI(void)
 
     glutInit(&dummy_argc, &dummy_argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
-    glutInitWindowSize(640 + 40, 500 + 40);
-    glutInitWindowPosition(500, 100);
+    glutInitWindowSize(1020, 810);  // Deploy window at comfortable size
+    glutInitWindowPosition(200, 50);
     glutCreateWindow((char*) "Virtual Heathkit H-89 All-in-One Computer");
 
     glClearColor(0.0f, 0.0f, 0.0f, 0.9f);
@@ -101,23 +167,108 @@ GUIglut::InitGUI(void)
 
     glShadeModel(GL_FLAT);
 
+    // Convert 1-bit bitmap to RGBA texture data
+    auto convertBitmapToTexture = [](unsigned char* bitmapData, GLubyte* textureData, int width, int height)
+    {
+        int bytesPerRow = (width + 7) / 8;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int byteIndex = y * bytesPerRow + (x / 8);
+                int bitIndex = 7 - (x % 8);
+                bool pixelOn = (bitmapData[byteIndex] & (1 << bitIndex)) != 0;
+
+                int pixelIndex = (y * width + x) * 4;  // RGBA = 4 bytes per pixel
+                if (pixelOn) {
+                    textureData[pixelIndex + 0] = 255;  // R: white
+                    textureData[pixelIndex + 1] = 255;  // G: white
+                    textureData[pixelIndex + 2] = 0;    // B: amber
+                    textureData[pixelIndex + 3] = 255;  // A: opaque
+                } else {
+                    textureData[pixelIndex + 0] = 0;    // R: transparent
+                    textureData[pixelIndex + 1] = 0;    // G: transparent
+                    textureData[pixelIndex + 2] = 0;    // B: transparent
+                    textureData[pixelIndex + 3] = 0;    // A: transparent
+                }
+            }
+        }
+    };
 
     GLuint i;
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-    fontOffset_m = glGenLists(0x101);
+    // Generate high-resolution font textures for smooth scaling
+    const int SCALED_FONT_WIDTH = 8 * FONT_SCALE;   // 128 pixels wide  
+    const int SCALED_FONT_HEIGHT = 20 * FONT_SCALE; // 320 pixels tall
+    const int BYTES_PER_ROW = (SCALED_FONT_WIDTH + 7) / 8;  // Round up to nearest byte
+    const int BYTES_PER_CHAR = BYTES_PER_ROW * SCALED_FONT_HEIGHT;
+
+    // Create scaled font bitmap table (dynamically sized)
+    static unsigned char* scaledFontTable = nullptr;
+    static int lastBytesPerChar = 0;
+    if (scaledFontTable == nullptr || lastBytesPerChar != BYTES_PER_CHAR) {
+        delete[] scaledFontTable;  // Safe to delete nullptr
+        scaledFontTable = new unsigned char[0x100 * BYTES_PER_CHAR];
+        lastBytesPerChar = BYTES_PER_CHAR;
+    }
+    memset(scaledFontTable, 0, 0x100 * BYTES_PER_CHAR);
+
+    // Variable scaling: each 8x20 char becomes SCALED_FONT_WIDTH x SCALED_FONT_HEIGHT
+    for (i = 0; i < 0x100; i++)
+    {
+        for (int srcRow = 0; srcRow < 20; srcRow++)
+        {
+            unsigned char originalByte = fontTable[i * 20 + srcRow];
+
+            // Scale each font pixel to create high-resolution bitmap  
+            for (int destRowOffset = 0; destRowOffset < FONT_SCALE; destRowOffset++)
+            {
+                int destRow = srcRow * FONT_SCALE + destRowOffset;
+
+                for (int srcBit = 0; srcBit < 8; srcBit++)
+                {
+                    if (originalByte & (0x80 >> srcBit))
+                    {
+                        for (int destBitOffset = 0; destBitOffset < FONT_SCALE; destBitOffset++)
+                        {
+                            int destBit = srcBit * FONT_SCALE + destBitOffset;
+
+                            // Set bit in scaled font block
+                            int byteIndex = i * BYTES_PER_CHAR + destRow * BYTES_PER_ROW + (destBit / 8);
+                            int bitIndex = 7 - (destBit % 8);
+                            scaledFontTable[byteIndex] |= (1 << bitIndex);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Generate OpenGL textures for each character (replaces display lists)
+    glGenTextures(256, fontTextures);
 
     for (i = 0; i < 0x100; i++)
     {
-        glNewList(fontOffset_m + i, GL_COMPILE);
-        glBitmap(8, 20, 0.0, 0.0, 0.0, -20.0, &fontTable[i * 20]);
-        glEndList();
+        // Convert bitmap to RGBA texture data
+        GLubyte* textureData = new GLubyte[SCALED_FONT_WIDTH * SCALED_FONT_HEIGHT * 4];
+        convertBitmapToTexture(&scaledFontTable[i * BYTES_PER_CHAR], textureData,
+                               SCALED_FONT_WIDTH, SCALED_FONT_HEIGHT);
+
+        // Create OpenGL texture
+        glBindTexture(GL_TEXTURE_2D, fontTextures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCALED_FONT_WIDTH, SCALED_FONT_HEIGHT, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, textureData);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+
+        delete[] textureData;
     }
 
-    // Special character to wrap around.
-    glNewList(fontOffset_m + 0x100, GL_COMPILE);
-    glBitmap(8, 20, 0.0, 0.0, 8.0, 500.0, &fontTable[32 * 20]);
-    glEndList();
+    // Note: Special character (wrap around) will be handled during rendering
+
+    // Fonts are rendered as textured quads for maximum compatibility
 
     glutReshapeFunc(reshape);
     glutSpecialFunc(special);
@@ -214,13 +365,18 @@ void
 GUIglut::reshape(int w,
                  int h)
 {
+    // Viewport maps to actual window size
     glViewport(0, 0, (GLsizei) w, (GLsizei) h);
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrtho(0.0, w, 0.0, h, -1.0, 1.0);
+    // Set up coordinates for VIRTUAL high-resolution canvas
+    // This creates the virtual 2720×2160 coordinate space that gets scaled to fit the window
+    glOrtho(0.0, VIRTUAL_WIDTH, 0.0, VIRTUAL_HEIGHT, -1.0, 1.0);
 
     glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
     glClearColor(0.0f, 0.0f, 0.0f, 0.9f);
     glClear(GL_COLOR_BUFFER_BIT);
 }
