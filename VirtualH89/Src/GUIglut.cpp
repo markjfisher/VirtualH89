@@ -21,6 +21,10 @@ const int VIRTUAL_SCALE = 4;                    // Virtual canvas scale factor
 const int VIRTUAL_WIDTH = 680 * VIRTUAL_SCALE;  // 2720 pixels wide
 const int VIRTUAL_HEIGHT = 540 * VIRTUAL_SCALE; // 2160 pixels tall
 
+// Aspect ratio preservation
+bool preserveAspectRatio = true;                     // Default: maintain aspect ratio
+const double NATURAL_ASPECT_RATIO = 680.0 / 540.0;  // Original H89 screen ratio (~1.259)
+
 // Color constants for maintainability
 const GLubyte FONT_COLOR_R = 255;  // White/amber red component
 const GLubyte FONT_COLOR_G = 255;  // White/amber green component  
@@ -381,13 +385,37 @@ void
 GUIglut::reshape(int w,
                  int h)
 {
-    // Viewport maps to actual window size
-    glViewport(0, 0, (GLsizei) w, (GLsizei) h);
+    if (preserveAspectRatio) {
+        // Calculate viewport dimensions that preserve the natural aspect ratio
+        double windowAspect = (double)w / (double)h;
+        int viewportWidth, viewportHeight;
+        int viewportX = 0, viewportY = 0;
+        
+        if (windowAspect > NATURAL_ASPECT_RATIO) {
+            // Window is wider than natural ratio - fit to height with pillarboxing
+            viewportHeight = h;
+            viewportWidth = (int)(h * NATURAL_ASPECT_RATIO);
+            viewportX = (w - viewportWidth) / 2;  // Center horizontally
+            viewportY = 0;
+        } else {
+            // Window is taller than natural ratio - fit to width with letterboxing
+            viewportWidth = w;
+            viewportHeight = (int)(w / NATURAL_ASPECT_RATIO);
+            viewportX = 0;
+            viewportY = (h - viewportHeight) / 2;  // Center vertically
+        }
+        
+        // Set viewport to maintain aspect ratio with black borders if needed
+        glViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+    } else {
+        // Original behavior: stretch to fill entire window
+        glViewport(0, 0, (GLsizei) w, (GLsizei) h);
+    }
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     // Set up coordinates for VIRTUAL high-resolution canvas
-    // This creates the virtual 2720×2160 coordinate space that gets scaled to fit the window
+    // This creates the virtual 2720×2160 coordinate space that gets scaled to fit the viewport
     glOrtho(0.0, VIRTUAL_WIDTH, 0.0, VIRTUAL_HEIGHT, -1.0, 1.0);
 
     glMatrixMode(GL_MODELVIEW);

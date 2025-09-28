@@ -21,6 +21,8 @@
 
 #if !defined(__GUIwx__)
 #include "GUIglut.h"
+// External control for aspect ratio preservation
+extern bool preserveAspectRatio;
 #endif
 
 /// \cond
@@ -40,7 +42,7 @@ const char* Z80_COPYRIGHT_c   = "Portions derived from Z80Pack Release 1.17"
 const char* RELEASE_VERSION_c = "1.93";
 const char* H89_COPYRIGHT_c   = "Copyright (C) 2009-2016 by Mark Garlanger";
 
-const char* usage_str         = " -q -g";
+const char* usage_str         = " -q -g -a";
 
 /// \todo - make H89 into a singleton.
 H89         h89;
@@ -73,6 +75,7 @@ usage(char* pn)
     cerr << "usage: " << pn << usage_str << endl;
     // cerr << "\ts = save core and cpu" << endl;
     // cerr << "\tl = load core and cpu" << endl;
+    cerr << "\ta = allow stretching (disable aspect ratio preservation)" << endl;
     cerr << "\tg = specify gui to use, default is built-in H19 emulation" << endl;
     cerr << "\tq = quiet - don't display opening banner" << endl;
     exit(1);
@@ -121,11 +124,12 @@ cpuThreadFunc(void* v)
 // Right now, it must be manually kept up to date.
 //
 //	option		owner
+//	-a		main.cpp
 //	-g <gui>	main.cpp
 //	-l		StdioProxyConsole.cpp
 //	-q		main.cpp
 //
-const char* getopts = "g:lq";
+const char* getopts = "ag:lq";
 
 #if defined(__GUIwx__)
 int
@@ -152,6 +156,12 @@ main(int   argc,
     {
         switch (c)
         {
+            case 'a':
+#if !defined(__GUIwx__)
+                preserveAspectRatio = false;  // Disable aspect ratio preservation (allow stretching)
+#endif
+                break;
+
             case 'q':
                 quiet = 1;
                 break;
