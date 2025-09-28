@@ -23,6 +23,8 @@
 #include "GUIglut.h"
 // External control for aspect ratio preservation
 extern bool preserveAspectRatio;
+// External control for texture filtering (uses OpenGL constants)
+extern GLenum textureFilterMode;
 #endif
 
 /// \cond
@@ -30,6 +32,7 @@ extern bool preserveAspectRatio;
 #include <signal.h>
 #include <stdlib.h>
 #include <string>
+#include <cstring>  // for strcmp
 #include <unistd.h>
 /// \endcond
 
@@ -42,7 +45,7 @@ const char* Z80_COPYRIGHT_c   = "Portions derived from Z80Pack Release 1.17"
 const char* RELEASE_VERSION_c = "1.93";
 const char* H89_COPYRIGHT_c   = "Copyright (C) 2009-2016 by Mark Garlanger";
 
-const char* usage_str         = " -q -g -a";
+const char* usage_str         = " [-h] [-q] [-g <gui>] [-a] [-f <filter>]";
 
 /// \todo - make H89 into a singleton.
 H89         h89;
@@ -72,13 +75,20 @@ displayLogo()
 void
 usage(char* pn)
 {
-    cerr << "usage: " << pn << usage_str << endl;
-    // cerr << "\ts = save core and cpu" << endl;
-    // cerr << "\tl = load core and cpu" << endl;
-    cerr << "\ta = allow stretching (disable aspect ratio preservation)" << endl;
-    cerr << "\tg = specify gui to use, default is built-in H19 emulation" << endl;
-    cerr << "\tq = quiet - don't display opening banner" << endl;
-    exit(1);
+    cout << "Virtual Heathkit H-89 All-in-One Computer Emulator" << endl;
+    cout << "usage: " << pn << usage_str << endl << endl;
+    cout << "Options:" << endl;
+    cout << "  -a              Allow stretching (disable aspect ratio preservation)" << endl;
+    cout << "  -f <mode>       Texture filter mode:" << endl;
+    cout << "                    nearest/n - Sharp, pixelated (retro look)" << endl;
+    cout << "                    linear/l  - Smooth, antialiased (modern look)" << endl;
+    cout << "  -g <gui>        Specify GUI to use (default: built-in H19 emulation)" << endl;
+    cout << "  -h, --help      Show this help message" << endl;
+    cout << "  -q              Quiet mode - don't display opening banner" << endl << endl;
+    cout << "Examples:" << endl;
+    cout << "  " << pn << " -f nearest      # Sharp retro fonts" << endl;
+    cout << "  " << pn << " -f linear -a    # Smooth fonts with stretching" << endl;
+    cout << "  " << pn << " -q              # Run quietly" << endl;
 }
 
 static void*
@@ -125,11 +135,13 @@ cpuThreadFunc(void* v)
 //
 //	option		owner
 //	-a		main.cpp
+//	-f <filter>	main.cpp
 //	-g <gui>	main.cpp
+//	-h		main.cpp (handled by early check, not getopt)
 //	-l		StdioProxyConsole.cpp
 //	-q		main.cpp
 //
-const char* getopts = "ag:lq";
+const char* getopts = "af:g:lq";
 
 #if defined(__GUIwx__)
 int
@@ -141,6 +153,14 @@ main(int   argc,
      char* argv[])
 #endif
 {
+    // Check for help flag FIRST, before any initialization
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            _exit(0);  // Fast exit without static destructors (prevents segfault)
+        }
+    }
+    
     int          c;
     extern char* optarg;
     string       gui("H19");
@@ -148,7 +168,7 @@ main(int   argc,
     setDebugLevel();
 
 #if !defined(__GUIwx__)
-    // Start a GUI engine.
+    // Start a GUI engine (after help check)
     TheGUI = new GUIglut();
 #endif
 
@@ -162,6 +182,21 @@ main(int   argc,
 #endif
                 break;
 
+            case 'f':
+#if !defined(__GUIwx__)
+                // Parse texture filter mode using OpenGL constants
+                if (strcmp(optarg, "nearest") == 0 || strcmp(optarg, "n") == 0) {
+                    textureFilterMode = GL_NEAREST;
+                } else if (strcmp(optarg, "linear") == 0 || strcmp(optarg, "l") == 0) {
+                    textureFilterMode = GL_LINEAR;
+                } else {
+                    cerr << "Invalid filter mode: " << optarg << " (use 'nearest', 'n', 'linear', or 'l')" << endl;
+                    usage(argv[0]);
+                    _exit(1);
+                }
+#endif
+                break;
+
             case 'q':
                 quiet = 1;
                 break;
@@ -169,6 +204,13 @@ main(int   argc,
             case 'g':
                 gui = optarg;
                 break;
+
+            // Note: -h/--help is handled by early check above, not in getopt loop
+
+            default:
+                cerr << "Unknown option" << endl;
+                usage(argv[0]);
+                _exit(1);
         }
     }
 

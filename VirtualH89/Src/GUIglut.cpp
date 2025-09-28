@@ -25,6 +25,13 @@ const int VIRTUAL_HEIGHT = 540 * VIRTUAL_SCALE; // 2160 pixels tall
 bool preserveAspectRatio = true;                     // Default: maintain aspect ratio
 const double NATURAL_ASPECT_RATIO = 680.0 / 540.0;  // Original H89 screen ratio (~1.259)
 
+// Texture filtering mode (uses OpenGL constants)
+GLenum textureFilterMode = GL_LINEAR;               // Default setting, can be overridden by command line to be GL_NEAREST
+
+// Force Apple code path for testing (uncomment to test on non-Apple systems)
+// #define FORCE_APPLE_TESTING 1
+// or add to gcc options: -D FORCE_APPLE_TESTING
+
 // Color constants for maintainability
 const GLubyte FONT_COLOR_R = 255;  // White/amber red component
 const GLubyte FONT_COLOR_G = 255;  // White/amber green component  
@@ -265,6 +272,10 @@ GUIglut::InitGUI(void)
     }
 
     // Generate OpenGL textures for each character (replaces display lists)
+    const char* filterName = (textureFilterMode == GL_NEAREST) ? "GL_NEAREST (sharp/retro)" : 
+                             (textureFilterMode == GL_LINEAR) ? "GL_LINEAR (smooth/antialiased)" : "unknown";
+    printf("Font texture filtering: %s\n", filterName);
+    
     glGenTextures(256, fontTextures);
 
     for (i = 0; i < 0x100; i++)
@@ -278,8 +289,8 @@ GUIglut::InitGUI(void)
         glBindTexture(GL_TEXTURE_2D, fontTextures[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCALED_FONT_WIDTH, SCALED_FONT_HEIGHT, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, textureData.get());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, textureFilterMode);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, textureFilterMode);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
@@ -385,31 +396,97 @@ void
 GUIglut::reshape(int w,
                  int h)
 {
+    // Detect actual framebuffer dimensions vs window dimensions
+    int framebufferWidth, framebufferHeight;
+    
+#ifdef __APPLE__
+    // macOS: Detect actual scale factor (don't assume 2x!)
+    static float detectedScaleX = 0.0f;
+    static float detectedScaleY = 0.0f;
+    
+    if (detectedScaleX == 0.0f) {
+        // First call: detect the actual scale factor
+        int glutWidth = glutGet(GLUT_WINDOW_WIDTH);
+        int glutHeight = glutGet(GLUT_WINDOW_HEIGHT);
+        
+        if (glutWidth > 0 && glutHeight > 0 && (glutWidth != w || glutHeight != h)) {
+            // There's a difference between GLUT window size and reshape size
+            // This indicates scaling is happening
+            detectedScaleX = (float)w / (float)glutWidth;
+            detectedScaleY = (float)h / (float)glutHeight;
+        } else {
+            // No scaling detected - use 1:1
+            detectedScaleX = 1.0f;
+            detectedScaleY = 1.0f;
+        }
+        
+        printf("macOS Scale Detection: GLUT=%dx%d, Reshape=%dx%d, Scale=%.1fx%.1f\n", 
+               glutWidth, glutHeight, w, h, detectedScaleX, detectedScaleY);
+    }
+    
+    framebufferWidth = (int)(w * detectedScaleX);
+    framebufferHeight = (int)(h * detectedScaleY);
+    
+#elif defined(FORCE_APPLE_TESTING)
+    // Testing mode: Test aspect ratio logic with simulated scaling
+    // BUT use real framebuffer dimensions for glViewport (can't actually double Linux framebuffer)
+    int simulatedFramebufferWidth = w * 2;
+    int simulatedFramebufferHeight = h * 2;
+    
+    // Use simulated dimensions for aspect ratio calculations
+    framebufferWidth = simulatedFramebufferWidth;
+    framebufferHeight = simulatedFramebufferHeight;
+    
+    printf("[FORCE_APPLE_TESTING] Testing aspect ratio with simulated %dx%d\n", 
+           framebufferWidth, framebufferHeight);
+           
+#else
+    // Other platforms: window size == framebuffer size (no scaling)
+    framebufferWidth = w;
+    framebufferHeight = h;
+#endif
+
+    // Determine actual OpenGL viewport dimensions (what we can actually use)
+    int actualViewportWidth, actualViewportHeight;
+    
+#ifdef FORCE_APPLE_TESTING
+    // On Linux testing: use real window dimensions for glViewport
+    actualViewportWidth = w;
+    actualViewportHeight = h;
+    printf("[FORCE_APPLE_TESTING] Using real viewport: %dx%d (not simulated %dx%d)\n", 
+           w, h, framebufferWidth, framebufferHeight);
+#else
+    // On real platforms: use detected framebuffer dimensions
+    actualViewportWidth = framebufferWidth;
+    actualViewportHeight = framebufferHeight;
+#endif
+
     if (preserveAspectRatio) {
         // Calculate viewport dimensions that preserve the natural aspect ratio
-        double windowAspect = (double)w / (double)h;
+        // Use framebuffer dimensions for aspect ratio calculation
+        double framebufferAspect = (double)framebufferWidth / (double)framebufferHeight;
         int viewportWidth, viewportHeight;
         int viewportX = 0, viewportY = 0;
         
-        if (windowAspect > NATURAL_ASPECT_RATIO) {
-            // Window is wider than natural ratio - fit to height with pillarboxing
-            viewportHeight = h;
-            viewportWidth = (int)(h * NATURAL_ASPECT_RATIO);
-            viewportX = (w - viewportWidth) / 2;  // Center horizontally
+        if (framebufferAspect > NATURAL_ASPECT_RATIO) {
+            // Framebuffer is wider than natural ratio - fit to height with pillarboxing
+            viewportHeight = actualViewportHeight;
+            viewportWidth = (int)(actualViewportHeight * NATURAL_ASPECT_RATIO);
+            viewportX = (actualViewportWidth - viewportWidth) / 2;  // Center horizontally
             viewportY = 0;
         } else {
-            // Window is taller than natural ratio - fit to width with letterboxing
-            viewportWidth = w;
-            viewportHeight = (int)(w / NATURAL_ASPECT_RATIO);
+            // Framebuffer is taller than natural ratio - fit to width with letterboxing
+            viewportWidth = actualViewportWidth;
+            viewportHeight = (int)(actualViewportWidth / NATURAL_ASPECT_RATIO);
             viewportX = 0;
-            viewportY = (h - viewportHeight) / 2;  // Center vertically
+            viewportY = (actualViewportHeight - viewportHeight) / 2;  // Center vertically
         }
         
-        // Set viewport to maintain aspect ratio with black borders if needed
+        // Use the ACTUAL viewport dimensions for glViewport (not simulated ones)
         glViewport(viewportX, viewportY, viewportWidth, viewportHeight);
     } else {
-        // Original behavior: stretch to fill entire window
-        glViewport(0, 0, (GLsizei) w, (GLsizei) h);
+        // Original behavior: stretch to fill entire actual viewport
+        glViewport(0, 0, (GLsizei) actualViewportWidth, (GLsizei) actualViewportHeight);
     }
 
     glMatrixMode(GL_PROJECTION);
@@ -423,6 +500,16 @@ GUIglut::reshape(int w,
 
     glClearColor(0.0f, 0.0f, 0.0f, 0.9f);
     glClear(GL_COLOR_BUFFER_BIT);
+
+#if defined(__APPLE__) || defined(FORCE_APPLE_TESTING)
+    // Debug output for display scaling detection
+    static bool logged = false;
+    if (!logged) {
+        printf("Display Info: Window=%dx%d, Framebuffer=%dx%d, Scale=%.1fx\n", 
+               w, h, framebufferWidth, framebufferHeight, (float)framebufferWidth / (float)w);
+        logged = true;
+    }
+#endif
 }
 
 
