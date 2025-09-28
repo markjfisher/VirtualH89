@@ -12,22 +12,29 @@
 #include "GUIglut.h"
 #include <cstring>  // for memset
 #include <cmath>    // for ceil
+#include <memory>   // for unique_ptr
 
 // High-resolution font rendering using OpenGL textures
 // Provides smooth scaling at any window size or scale factor
-const int FONT_SCALE = 16;                      // Font resolution multiplier for smooth scaling
+const int FONT_SCALE = 4;                       // Font resolution multiplier for smooth scaling (reduced from 16x for performance)
 const int VIRTUAL_SCALE = 4;                    // Virtual canvas scale factor
 const int VIRTUAL_WIDTH = 680 * VIRTUAL_SCALE;  // 2720 pixels wide
 const int VIRTUAL_HEIGHT = 540 * VIRTUAL_SCALE; // 2160 pixels tall
+
+// Color constants for maintainability
+const GLubyte FONT_COLOR_R = 255;  // White/amber red component
+const GLubyte FONT_COLOR_G = 255;  // White/amber green component  
+const GLubyte FONT_COLOR_B = 0;    // Amber blue component (0 for amber)
+const GLubyte FONT_COLOR_A = 255;  // Opaque alpha
 
 // OpenGL texture objects for font rendering
 GLuint fontTextures[256];  // One texture per character
 
 // How HIGH-RESOLUTION TEXTURE scaling works:
-// 1. Generate fonts at 16x resolution (128x320 pixels) as OpenGL textures
+// 1. Generate fonts at 4x resolution (32x80 pixels) as OpenGL textures  
 // 2. Render to 2720x2160 virtual canvas using textured quads
 // 3. OpenGL viewport scales virtual canvas to actual window size
-// 4. Linear texture filtering provides smooth scaling at any size
+// 4. Nearest neighbor filtering for retro look and performance
 // ==========================================
 
 tKeyboardFunc GUIglut::GUIKeyboardFunc = nullptr;
@@ -41,7 +48,7 @@ unsigned int  GUIglut::m_ms;
 #define max(a, b)    ((a) > (b) ? (a) : (b))
 #define min(a, b)    ((a) < (b) ? (a) : (b))
 
-GUIglut::GUIglut()
+GUIglut::GUIglut() : scaledFontTable(nullptr), scaledFontTableSize(0)
 {
     // Set inverted character generator for GLUT.
     fontTable = (unsigned char*) fontTableInverted;
@@ -51,7 +58,10 @@ GUIglut::GUIglut()
 
 GUIglut::~GUIglut()
 {
-    // TODO Auto-generated destructor stub
+    // Clean up dynamically allocated font table
+    delete[] scaledFontTable;
+    scaledFontTable = nullptr;
+    scaledFontTableSize = 0;
 }
 
 void
@@ -76,8 +86,9 @@ GUIglut::GUIDisplay(void)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Render each character as a textured quad
+    // Render each character as a textured quad with batching for performance
     // Note: screen_m is column-major: screen_m[col][row], not [row][col]
+    GLuint lastTexture = 0;
     for (int row = 0; row < 25; row++) {
         for (int col = 0; col < H19::GetH19()->cols_c; col++) {
             // Access screen data in column-major order: [col][row]
@@ -92,8 +103,12 @@ GUIglut::GUIDisplay(void)
             float w = 8 * VIRTUAL_SCALE;  // Character width in virtual space
             float h = 20 * VIRTUAL_SCALE; // Character height in virtual space
 
-            // Bind character texture and render quad
-            glBindTexture(GL_TEXTURE_2D, fontTextures[charIndex]);
+            // Only bind texture when it changes (reduces state changes)
+            if (fontTextures[charIndex] != lastTexture) {
+                glBindTexture(GL_TEXTURE_2D, fontTextures[charIndex]);
+                lastTexture = fontTextures[charIndex];
+            }
+            
             glBegin(GL_QUADS);
                 glTexCoord2f(0.0f, 0.0f); glVertex2f(x,     y);
                 glTexCoord2f(1.0f, 0.0f); glVertex2f(x + w, y);
@@ -123,8 +138,10 @@ GUIglut::GUIDisplay(void)
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-            // Render cursor as textured quad
-            glBindTexture(GL_TEXTURE_2D, fontTextures[cursor]);
+            // Render cursor as textured quad (only bind if different from last texture)
+            if (fontTextures[cursor] != lastTexture) {
+                glBindTexture(GL_TEXTURE_2D, fontTextures[cursor]);
+            }
             glBegin(GL_QUADS);
                 glTexCoord2f(0.0f, 0.0f); glVertex2f(x,     y);
                 glTexCoord2f(1.0f, 0.0f); glVertex2f(x + w, y);
@@ -180,10 +197,10 @@ GUIglut::InitGUI(void)
 
                 int pixelIndex = (y * width + x) * 4;  // RGBA = 4 bytes per pixel
                 if (pixelOn) {
-                    textureData[pixelIndex + 0] = 255;  // R: white
-                    textureData[pixelIndex + 1] = 255;  // G: white
-                    textureData[pixelIndex + 2] = 0;    // B: amber
-                    textureData[pixelIndex + 3] = 255;  // A: opaque
+                    textureData[pixelIndex + 0] = FONT_COLOR_R;  // R: configurable
+                    textureData[pixelIndex + 1] = FONT_COLOR_G;  // G: configurable
+                    textureData[pixelIndex + 2] = FONT_COLOR_B;  // B: configurable
+                    textureData[pixelIndex + 3] = FONT_COLOR_A;  // A: opaque
                 } else {
                     textureData[pixelIndex + 0] = 0;    // R: transparent
                     textureData[pixelIndex + 1] = 0;    // G: transparent
@@ -203,15 +220,14 @@ GUIglut::InitGUI(void)
     const int BYTES_PER_ROW = (SCALED_FONT_WIDTH + 7) / 8;  // Round up to nearest byte
     const int BYTES_PER_CHAR = BYTES_PER_ROW * SCALED_FONT_HEIGHT;
 
-    // Create scaled font bitmap table (dynamically sized)
-    static unsigned char* scaledFontTable = nullptr;
-    static int lastBytesPerChar = 0;
-    if (scaledFontTable == nullptr || lastBytesPerChar != BYTES_PER_CHAR) {
+    // Create scaled font bitmap table (using class member for proper RAII)
+    int newTableSize = 0x100 * BYTES_PER_CHAR;
+    if (scaledFontTable == nullptr || scaledFontTableSize != newTableSize) {
         delete[] scaledFontTable;  // Safe to delete nullptr
-        scaledFontTable = new unsigned char[0x100 * BYTES_PER_CHAR];
-        lastBytesPerChar = BYTES_PER_CHAR;
+        scaledFontTable = new unsigned char[newTableSize];
+        scaledFontTableSize = newTableSize;
     }
-    memset(scaledFontTable, 0, 0x100 * BYTES_PER_CHAR);
+    memset(scaledFontTable, 0, scaledFontTableSize);
 
     // Variable scaling: each 8x20 char becomes SCALED_FONT_WIDTH x SCALED_FONT_HEIGHT
     for (i = 0; i < 0x100; i++)
@@ -249,21 +265,21 @@ GUIglut::InitGUI(void)
 
     for (i = 0; i < 0x100; i++)
     {
-        // Convert bitmap to RGBA texture data
-        GLubyte* textureData = new GLubyte[SCALED_FONT_WIDTH * SCALED_FONT_HEIGHT * 4];
-        convertBitmapToTexture(&scaledFontTable[i * BYTES_PER_CHAR], textureData,
+        // Convert bitmap to RGBA texture data using RAII for exception safety
+        std::unique_ptr<GLubyte[]> textureData(new GLubyte[SCALED_FONT_WIDTH * SCALED_FONT_HEIGHT * 4]);
+        convertBitmapToTexture(&scaledFontTable[i * BYTES_PER_CHAR], textureData.get(),
                                SCALED_FONT_WIDTH, SCALED_FONT_HEIGHT);
 
         // Create OpenGL texture
         glBindTexture(GL_TEXTURE_2D, fontTextures[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCALED_FONT_WIDTH, SCALED_FONT_HEIGHT, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, textureData);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                     GL_RGBA, GL_UNSIGNED_BYTE, textureData.get());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
-        delete[] textureData;
+        // textureData automatically cleaned up by unique_ptr
     }
 
     // Note: Special character (wrap around) will be handled during rendering

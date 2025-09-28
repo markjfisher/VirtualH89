@@ -66,6 +66,10 @@ class GUIglut: public GUI
     unsigned int   fontOffset_m;
 
     unsigned char* fontTable;
+    
+    // Memory management for scaled font data
+    unsigned char* scaledFontTable;
+    int scaledFontTableSize;
 
 };
 
