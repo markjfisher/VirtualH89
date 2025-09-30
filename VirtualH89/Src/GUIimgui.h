@@ -85,6 +85,9 @@ class GUIimgui: public GUI
     // Deferred window scaling (to avoid ImGui event conflicts)
     int pendingWindowScale;
 
+    // Flag to prevent event filter from triggering on programmatic resizes
+    bool programmaticResize;
+
     // Window size persistence
     int savedWindowWidth;
     int savedWindowHeight;

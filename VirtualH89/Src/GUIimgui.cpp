@@ -87,6 +87,7 @@ GUIimgui::GUIimgui()
     , cachedOffsetY(0)
     , lastUIEventTime(0)
     , pendingWindowScale(0)
+    , programmaticResize(false)
     , savedWindowWidth(1360)  // Default 2x scale
     , savedWindowHeight(1080)
 {
@@ -177,7 +178,7 @@ void GUIimgui::InitGUI(void)
     SDL_SetHint(SDL_HINT_VIDEO_X11_WINDOW_VISUALID, "");
 
     // Create window with SDL_Renderer graphics context  
-    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_RESIZABLE);
 
     window = SDL_CreateWindow("VirtualH89 - Heathkit H-89 Emulator (SDL2 Renderer)", 
                              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
@@ -202,6 +203,13 @@ void GUIimgui::InitGUI(void)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+
+    // Configure ImGui display size
+    int window_width, window_height;
+    SDL_GetWindowSize(window, &window_width, &window_height);
+    io.DisplaySize = ImVec2((float)window_width, (float)window_height);
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
     // Setup Dear ImGui style
@@ -210,6 +218,32 @@ void GUIimgui::InitGUI(void)
     // Setup Platform/Renderer backends - SDL2 renderer is truly cross-platform!
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
+
+#ifdef __APPLE__
+    // Set up event filter for macOS resize handling
+    // This helps capture resize events during dragging on macOS
+    SDL_SetEventFilter([](void* userdata, SDL_Event* event) -> int {
+        if (event->type == SDL_WINDOWEVENT && 
+            (event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED || 
+             event->window.event == SDL_WINDOWEVENT_RESIZED)) {
+
+            GUIimgui* gui = static_cast<GUIimgui*>(userdata);
+            if (gui && !gui->programmaticResize) {
+                // Only handle user-initiated resizes (not programmatic ones)
+                gui->windowSizeChanged = true;
+
+                // Render immediately from event filter (macOS blocks main loop during resize)
+                if (GUIDisplayFunc) {
+                    GUIDisplayFunc();
+                }
+            }
+
+            // Return 1 to allow event to continue to main loop for proper cleanup
+            return 1;
+        }
+        return 1; // Allow other events to continue processing
+    }, this);
+#endif
 
     setupH19Font();
 
@@ -417,7 +451,7 @@ void GUIimgui::GUIDisplay(void)
 
     // Setup ImGui frame
     ImGui_ImplSDLRenderer2_NewFrame();
-    ImGui_ImplSDL2_NewFrame();  
+    ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     PROFILE_FRAME_STAGE("imgui_start");
 
@@ -460,9 +494,29 @@ void GUIimgui::renderTerminal()
     int window_height = cachedWindowHeight;
 
     if (windowSizeChanged) {
+        // Get current window size
         SDL_GetWindowSize(window, &window_width, &window_height);
         windowSizeChanged = false; // Reset the flag
+    } else {
+        // On macOS, we need to continuously update during resize to avoid "snapshot" behavior
+        // Check if we're currently resizing by polling the window size
+        int current_width, current_height;
+        SDL_GetWindowSize(window, &current_width, &current_height);
+        if (current_width != window_width || current_height != window_height) {
+            window_width = current_width;
+            window_height = current_height;
+            // Force recalculation of scaling
+            cachedCharScaleX = 0.0f;
+            cachedCharScaleY = 0.0f;
+
+            // Continuous updates during resize (macOS)
+        }
     }
+
+    // Use full window size for terminal rendering
+    int available_width = window_width;
+    int available_height = window_height;
+
 
     // Track aspect ratio changes and forced recalculations
     static bool lastAspectRatioMode = maintainAspectRatio; 
@@ -568,12 +622,30 @@ void GUIimgui::handleEvents()
                         running = false;
                     } else if (event.window.event == SDL_WINDOWEVENT_RESIZED || 
                                event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                        // SIMPLE: Just mark that window size changed
-                        // The main render throttling will prevent resource leaks
+                        // Mark the cached sizes dirty like you already do
                         windowSizeChanged = true;
-                        
-                        // Save the new window size for persistence
+
+                        // Save new size
                         SDL_GetWindowSize(window, &savedWindowWidth, &savedWindowHeight);
+
+                        // IMPORTANT: treat this as a "hot" UI event so StartGUI renders
+                        lastUIEventTime = SDL_GetTicks();
+
+
+#ifdef __APPLE__
+                        // On macOS, present *now* so the OS doesn't just stretch the last frame.
+                        // Render immediately in response to the resize event.
+                        if (GUIDisplayFunc) {
+                            GUIDisplayFunc();           // draws + SDL_RenderPresent()
+                            screenNeedsRedraw = false;  // we've just drawn
+                        }
+#endif
+                    } else if (event.window.event == SDL_WINDOWEVENT_EXPOSED) {
+                        // Some WMs/OSes fire this during live-resize; render on it too.
+                        if (GUIDisplayFunc) {
+                            GUIDisplayFunc();
+                            screenNeedsRedraw = false;
+                        }
                     }
                 }
                 break;
@@ -601,7 +673,7 @@ void GUIimgui::processKeyboard(SDL_KeyboardEvent& key)
         running = false;
         return;
     }
-    
+
     // Check for Ctrl+S to save config
     if (key.keysym.sym == SDLK_s && (keymod & KMOD_CTRL)) {
         saveConfig();
@@ -737,6 +809,7 @@ void GUIimgui::StartGUI(void)
 
     // Main loop (timer now runs independently via SDL_AddTimer)
     while (running) {
+
         handleEvents();
 
         // Process any pending window scaling (safe to do in main loop)
@@ -751,9 +824,8 @@ void GUIimgui::StartGUI(void)
         // Check if we recently had UI events that might need responsive rendering
         Uint32 currentTime = SDL_GetTicks();
         bool uiNeedsRender = (currentTime - lastUIEventTime) < UI_EVENT_RENDER_DURATION;
-
         if (screenNeedsRedraw || uiNeedsRender) {
-            // RENDER THROTTLING: Choose tighter cap only when UI is "hot"
+            // RENDER THROTTLING: Choose tighter cap when UI is "hot"
             const bool uiHot = uiNeedsRender; 
             const Uint32 minInterval = uiHot ? 8 /*~120 FPS*/ : 16 /*~60 FPS for normal operation*/;
 
@@ -868,6 +940,9 @@ void GUIimgui::renderConfigWindow()
         // Show current window info and potential issues
         int currentWidth, currentHeight;
         SDL_GetWindowSize(window, &currentWidth, &currentHeight);
+        int drawableWidth, drawableHeight;
+        SDL_GetRendererOutputSize(renderer, &drawableWidth, &drawableHeight);
+
         ImGui::Text("Current window: %dx%d", currentWidth, currentHeight);
 
         if (videoDriver) {
@@ -1070,10 +1145,6 @@ void GUIimgui::applyFilterMode()
     // This affects all subsequently created textures
     const char* filterHint = (filterMode == 0) ? "0" : "1";  // 0=nearest, 1=linear
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, filterHint);
-
-    // Log the change for debugging
-    // const char* filterName = (filterMode == 0) ? "Nearest (Sharp/Retro)" : "Linear (Smooth/Antialiased)";
-    // printf("Texture filtering mode set to: %s\n", filterName);
 }
 
 //
@@ -1102,7 +1173,37 @@ void GUIimgui::setWindowScale(int scale)
 
     // Set the new window size
     SDL_SetWindowResizable(window, SDL_TRUE);
+
+    // Mark as programmatic resize to prevent event filter interference
+    programmaticResize = true;
+
+    // Force macOS to respect our window size with multiple attempts
     SDL_SetWindowSize(window, newWidth, newHeight);
+    SDL_Delay(10);
+
+    // Check if macOS ignored our size and try again
+    int actual_width, actual_height;
+    SDL_GetWindowSize(window, &actual_width, &actual_height);
+    if (actual_width != newWidth || actual_height != newHeight) {
+        // macOS sometimes ignores the first resize attempt, retry
+        SDL_SetWindowSize(window, newWidth, newHeight);
+        SDL_Delay(10);
+        SDL_GetWindowSize(window, &actual_width, &actual_height);
+        if (actual_width != newWidth || actual_height != newHeight) {
+            // Try setting max size constraint to force it
+            SDL_SetWindowMaximumSize(window, newWidth, newHeight);
+            SDL_SetWindowSize(window, newWidth, newHeight);
+            SDL_Delay(10);
+        }
+    }
+
+    programmaticResize = false;
+
+    // Update cached window sizes immediately
+    cachedWindowWidth = newWidth;
+    cachedWindowHeight = newHeight;
+    windowSizeChanged = true;
+
 
     // Brief delay for window manager processing
     SDL_Delay(20);
@@ -1114,12 +1215,13 @@ void GUIimgui::setWindowScale(int scale)
     SDL_RenderSetViewport(renderer, NULL);
 
     // Update cached values and force terminal rescaling
+    // Use logical window size since we disabled high DPI scaling
     SDL_GetWindowSize(window, &cachedWindowWidth, &cachedWindowHeight);
     windowSizeChanged = true;
     cachedCharScaleX = 0.0f;  // Force recalculation
     cachedCharScaleY = 0.0f;
     screenNeedsRedraw = true;
-    
+
     // Update saved window size for persistence
     savedWindowWidth = cachedWindowWidth;
     savedWindowHeight = cachedWindowHeight;
@@ -1223,7 +1325,7 @@ void GUIimgui::loadConfig()
     }
 
     configFile.close();
-    
+
     printf("Configuration loaded successfully\n");
 }
 
