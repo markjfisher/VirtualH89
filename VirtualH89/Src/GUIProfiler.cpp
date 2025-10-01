@@ -133,17 +133,6 @@ void GUIProfiler::doAutomationEnd(int run, uint32_t duration) {
            run + 1, duration, duration / 1000.0f);
 
     viewTimes[run] = duration;
-
-    // Check if we've completed all 3 runs
-    if (run >= 2) {
-        printf("\n📊 **FINAL PERFORMANCE SUMMARY** 📊\n");
-        printf("Run #1: %u ms (%.2f seconds)\n", viewTimes[0], viewTimes[0] / 1000.0f);
-        printf("Run #2: %u ms (%.2f seconds)\n", viewTimes[1], viewTimes[1] / 1000.0f);
-        printf("Run #3: %u ms (%.2f seconds)\n", viewTimes[2], viewTimes[2] / 1000.0f);
-
-        float avgTime = (viewTimes[0] + viewTimes[1] + viewTimes[2]) / 3.0f;
-        printf("Average: %.2f ms (%.3f seconds)\n", avgTime, avgTime / 1000.0f);
-    }
 }
 
 void GUIProfiler::doCheckCursorStability(uint32_t cursorX, uint32_t cursorY, uint32_t currentTime) {
