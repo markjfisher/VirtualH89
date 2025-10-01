@@ -87,7 +87,6 @@ GUIimgui::GUIimgui()
     , cachedOffsetY(0)
     , lastUIEventTime(0)
     , pendingWindowScale(0)
-    , programmaticResize(false)
     , savedWindowWidth(1360)  // Default 2x scale
     , savedWindowHeight(1080)
 {
@@ -234,8 +233,8 @@ void GUIimgui::InitGUI(void)
              event->window.event == SDL_WINDOWEVENT_RESIZED)) {
 
             GUIimgui* gui = static_cast<GUIimgui*>(userdata);
-            if (gui && !gui->programmaticResize) {
-                // Only handle user-initiated resizes (not programmatic ones)
+            if (gui) {
+                // Handle user-initiated resizes
                 gui->windowSizeChanged = true;
 
                 // Render immediately from event filter (macOS blocks main loop during resize)
@@ -1179,50 +1178,61 @@ void GUIimgui::setWindowScale(int scale)
     int baseWidth = H19_TERMINAL_COLS * H19_CHAR_WIDTH + 2 * H19_BORDER_SIZE;   // 680 pixels
     int baseHeight = H19_TERMINAL_ROWS * H19_CHAR_HEIGHT + 2 * H19_BORDER_SIZE; // 540 pixels
 
-    // Calculate new window size
-    int newWidth = baseWidth * scale;
-    int newHeight = baseHeight * scale;
+    // Calculate desired window size
+    int desiredWidth = baseWidth * scale;
+    int desiredHeight = baseHeight * scale;
 
-    // Clear any size constraints that might interfere
-    SDL_SetWindowMinimumSize(window, 1, 1);
-    SDL_SetWindowMaximumSize(window, 0, 0);
+#ifdef __APPLE__
+    // On macOS, detect OS constraints and apply desktop limits
+    static int maxAllowedWidth = -1;
+    static int maxAllowedHeight = -1;
 
-    // Try to restore window if maximized (common issue)
-    Uint32 windowFlags = SDL_GetWindowFlags(window);
-    if (windowFlags & SDL_WINDOW_MAXIMIZED) {
-        SDL_RestoreWindow(window);
-        SDL_Delay(20);
-    }
-
-    // Set the new window size
-    SDL_SetWindowResizable(window, SDL_TRUE);
-
-    // Mark as programmatic resize to prevent event filter interference
-    programmaticResize = true;
-
-    // Force macOS to respect our window size with multiple attempts
-    SDL_SetWindowSize(window, newWidth, newHeight);
-    SDL_Delay(10);
-
-    // Check if macOS ignored our size and try again
-    int actual_width, actual_height;
-    SDL_GetWindowSize(window, &actual_width, &actual_height);
-    if (actual_width != newWidth || actual_height != newHeight) {
-        // macOS sometimes ignores the first resize attempt, retry
-        SDL_SetWindowSize(window, newWidth, newHeight);
+    if (maxAllowedWidth == -1 || maxAllowedHeight == -1) {
+        // First, test with 9999 to see what the OS will actually allow
+        SDL_SetWindowSize(window, 9999, 9999);
         SDL_Delay(10);
-        SDL_GetWindowSize(window, &actual_width, &actual_height);
-        if (actual_width != newWidth || actual_height != newHeight) {
-            // Try setting max size constraint to force it
-            SDL_SetWindowMaximumSize(window, newWidth, newHeight);
-            SDL_SetWindowSize(window, newWidth, newHeight);
-            SDL_Delay(10);
+        int osMaxWidth, osMaxHeight;
+        SDL_GetWindowSize(window, &osMaxWidth, &osMaxHeight);
+
+        // Then get the desktop size
+        SDL_Rect displayBounds;
+        int displayIndex = SDL_GetWindowDisplayIndex(window);
+        if (SDL_GetDisplayBounds(displayIndex, &displayBounds) == 0) {
+            // Use the smaller of OS constraint or desktop size
+            maxAllowedWidth = (osMaxWidth < displayBounds.w) ? osMaxWidth : displayBounds.w;
+            maxAllowedHeight = (osMaxHeight < displayBounds.h) ? osMaxHeight : displayBounds.h;
+        } else {
+            // Fallback to OS constraint
+            maxAllowedWidth = osMaxWidth;
+            maxAllowedHeight = osMaxHeight;
         }
     }
 
-    programmaticResize = false;
+    // Use the smaller of desired size or combined maximum
+    int newWidth = (desiredWidth < maxAllowedWidth) ? desiredWidth : maxAllowedWidth;
+    int newHeight = (desiredHeight < maxAllowedHeight) ? desiredHeight : maxAllowedHeight;
 
-    // Update cached window sizes immediately
+#else
+    // On Linux, use the desired size directly
+    int newWidth = desiredWidth;
+    int newHeight = desiredHeight;
+#endif
+
+    // Set the window size
+    SDL_SetWindowSize(window, newWidth, newHeight);
+
+#ifdef __APPLE__
+    // Center the window on macOS to prevent it from extending off-screen
+    SDL_Rect displayBounds;
+    int displayIndex = SDL_GetWindowDisplayIndex(window);
+    if (SDL_GetDisplayBounds(displayIndex, &displayBounds) == 0) {
+        int centerX = displayBounds.x + (displayBounds.w - newWidth) / 2;
+        int centerY = displayBounds.y + (displayBounds.h - newHeight) / 2;
+        SDL_SetWindowPosition(window, centerX, centerY);
+    }
+#endif
+
+    // Update cached window sizes
     cachedWindowWidth = newWidth;
     cachedWindowHeight = newHeight;
     windowSizeChanged = true;
