@@ -77,10 +77,11 @@ GUIimgui::GUIimgui()
     , running(true)
     , maintainAspectRatio(true)
     , colorScheme(0)  // Default: Amber
-    , filterMode(1)   // Default: Linear (smooth)
+    , linearTextureScale(8)   // Default: 8x oversampling (sweet spot)
     , cachedWindowWidth(0)
     , cachedWindowHeight(0)
     , windowSizeChanged(true)
+    , configDirty(false)
     , cachedCharScaleX(1.0f)
     , cachedCharScaleY(1.0f)
     , cachedOffsetX(0)
@@ -104,8 +105,6 @@ GUIimgui::GUIimgui()
     backgroundColor[1] = 0.0f; 
     backgroundColor[2] = 0.0f;
 
-    // Set initial texture filtering mode
-    applyFilterMode();
 
     debugss(ssH19, INFO, "GUIimgui constructor - SDL2 Renderer backend (cross-platform!)\n");
 }
@@ -178,6 +177,9 @@ void GUIimgui::InitGUI(void)
     // Set hints for proper window decorations on tiling window managers like Hyprland
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
     SDL_SetHint(SDL_HINT_VIDEO_X11_WINDOW_VISUALID, "");
+    
+    // Enable linear filtering for smooth text rendering
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
     // Create window with SDL_Renderer graphics context  
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_RESIZABLE);
@@ -279,8 +281,6 @@ void GUIimgui::createFontTextures()
     const int FONT_HEIGHT = 20;
     const int BYTES_PER_CHAR = 20;  // 20 bytes per character in font table
 
-    // Apply current filter mode before creating textures
-    applyFilterMode();
 
     // Create RGBA texture data for each character
     for (int i = 0; i < 256; i++)
@@ -637,6 +637,8 @@ void GUIimgui::handleEvents()
                                event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                         // Mark the cached sizes dirty like you already do
                         windowSizeChanged = true;
+                        // Mark config as dirty when window is manually resized
+                        markConfigDirty();
 
                         // Save new size
                         SDL_GetWindowSize(window, &savedWindowWidth, &savedWindowHeight);
@@ -918,12 +920,21 @@ void GUIimgui::SetTimerFunc(unsigned int ms, tTimerFunc TimerFunc)
 void GUIimgui::renderConfigWindow()
 {
     if (ImGui::Begin("Configuration", &showConfig, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Save original values when config window first opens
+        static bool configWindowJustOpened = false;
+        if (showConfig && !configWindowJustOpened) {
+            saveOriginalConfig();
+            configWindowJustOpened = true;
+        } else if (!showConfig) {
+            configWindowJustOpened = false;
+        }
         ImGui::Text("Display Settings");
         ImGui::Separator();
 
         // Aspect ratio setting
         if (ImGui::Checkbox("Maintain Aspect Ratio", &maintainAspectRatio)) {
             // Aspect ratio change will be handled in renderTerminal()
+            markConfigDirty();
         }
 
         // Quick scaling options
@@ -946,18 +957,22 @@ void GUIimgui::renderConfigWindow()
         if (ImGui::Button("1x (680x540)##scale")) {
             // Defer window scaling to avoid ImGui event conflicts
             pendingWindowScale = 1;
+            markConfigDirty();
         }
         ImGui::SameLine();
         if (ImGui::Button("2x (1360x1080)##scale")) {
             pendingWindowScale = 2;
+            markConfigDirty();
         }
         ImGui::SameLine();
         if (ImGui::Button("3x (2040x1620)##scale")) {
             pendingWindowScale = 3;
+            markConfigDirty();
         }
         ImGui::SameLine();
         if (ImGui::Button("4x (2720x2160)##scale")) {
             pendingWindowScale = 4;
+            markConfigDirty();
         }
 
         if (scalingDisabled) {
@@ -1007,11 +1022,10 @@ void GUIimgui::renderConfigWindow()
         ImGui::Text("Rendering Settings");
         ImGui::Separator();
 
-        // Filter mode selection
-        const char* filterModes[] = { "Nearest (Sharp/Retro)", "Linear (Smooth/Antialiased)" };
-        if (ImGui::Combo("Texture Filtering", &filterMode, filterModes, 2)) {
-            applyFilterMode();
+        // Oversampling setting
+        if (ImGui::SliderInt("Oversampling", &linearTextureScale, 1, 8, "%dx")) {
             updateFontTextures();
+            markConfigDirty();
         }
 
         ImGui::Spacing();
@@ -1023,6 +1037,7 @@ void GUIimgui::renderConfigWindow()
         if (ImGui::Combo("Color Scheme", &colorScheme, schemes, 4)) {
             applyColorScheme();
             updateFontTextures();
+            markConfigDirty();
         }
 
         ImGui::Spacing();
@@ -1035,29 +1050,40 @@ void GUIimgui::renderConfigWindow()
         if (colorChanged) {
             colorScheme = -1; // Mark as custom
             updateFontTextures();
+            markConfigDirty();
         }
 
         ImGui::Spacing();
         ImGui::Separator();
 
-        if (ImGui::Button("OK")) {
-            saveConfig();  // Save before closing
-            showConfig = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Apply")) {
-            saveConfig();  // Save current settings
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Save Config")) {
-            saveConfig();  // Explicit save
-        }
-        ImGui::SameLine();
+        // Reset to Amber button (above other buttons)
         if (ImGui::Button("Reset to Amber")) {
             colorScheme = 0;
             applyColorScheme();
             updateFontTextures();
-            saveConfig();  // Save the reset
+            markConfigDirty();
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // Save button - greyed out when no changes
+        bool saveDisabled = !configDirty;
+        if (saveDisabled) {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Save Config")) {
+            saveConfig();  // Save current settings
+            configDirty = false;
+        }
+        if (saveDisabled) {
+            ImGui::EndDisabled();
+        }
+        ImGui::SameLine();
+        
+        // Reload Config button - restores original settings from file
+        if (ImGui::Button("Reload Config")) {
+            restoreOriginalConfig();
         }
     }
     ImGui::End();
@@ -1100,14 +1126,11 @@ void GUIimgui::updateFontTextures()
     const int FONT_HEIGHT = 20;
     const int BYTES_PER_CHAR = 20;
 
-    // Ensure correct filtering mode is applied to new textures
-    applyFilterMode();
 
-    // Convert float colors to byte values with brightness boost for linear filtering
-    float brightness = (filterMode == 1) ? 1.3f : 1.0f;  // 30% brighter for linear filtering
-    unsigned char fg_r = (unsigned char)(std::min(255.0f, foregroundColor[0] * 255 * brightness));
-    unsigned char fg_g = (unsigned char)(std::min(255.0f, foregroundColor[1] * 255 * brightness));
-    unsigned char fg_b = (unsigned char)(std::min(255.0f, foregroundColor[2] * 255 * brightness));
+    // Convert float colors to byte values (no brightness boost needed - oversampling handles brightness)
+    unsigned char fg_r = (unsigned char)(foregroundColor[0] * 255);
+    unsigned char fg_g = (unsigned char)(foregroundColor[1] * 255);
+    unsigned char fg_b = (unsigned char)(foregroundColor[2] * 255);
 
     // Recreate all font textures with new colors
     for (int i = 0; i < 256; i++)
@@ -1118,10 +1141,9 @@ void GUIimgui::updateFontTextures()
             fontTextures[i] = nullptr;
         }
 
-        // For linear filtering, create higher resolution textures for better quality
-        int textureScale = (filterMode == 1) ? 2 : 1;  // 2x scale for linear filtering
-        int textureWidth = FONT_WIDTH * textureScale;
-        int textureHeight = FONT_HEIGHT * textureScale;
+        // Create higher resolution textures with configurable oversampling
+        int textureWidth = FONT_WIDTH * linearTextureScale;
+        int textureHeight = FONT_HEIGHT * linearTextureScale;
         
         // Allocate RGBA texture data (4 bytes per pixel)
         unsigned char* textureData = new unsigned char[textureWidth * textureHeight * 4];
@@ -1138,10 +1160,10 @@ void GUIimgui::updateFontTextures()
                 bool pixel = fontByte & (1 << (7 - col));
                 
                 // Fill the scaled texture block
-                for (int sy = 0; sy < textureScale; sy++) {
-                    for (int sx = 0; sx < textureScale; sx++) {
-                        int textureRow = row * textureScale + sy;
-                        int textureCol = col * textureScale + sx;
+                for (int sy = 0; sy < linearTextureScale; sy++) {
+                    for (int sx = 0; sx < linearTextureScale; sx++) {
+                        int textureRow = row * linearTextureScale + sy;
+                        int textureCol = col * linearTextureScale + sx;
                         int pixelIndex = (textureRow * textureWidth + textureCol) * 4;
 
                         if (pixel)
@@ -1182,15 +1204,62 @@ void GUIimgui::updateFontTextures()
 }
 
 //
+// Mark config as dirty when changes are made
+//
+void GUIimgui::markConfigDirty()
+{
+    configDirty = true;
+}
+
+//
+// Save original config values when config window opens
+//
+void GUIimgui::saveOriginalConfig()
+{
+    originalMaintainAspectRatio = maintainAspectRatio;
+    originalColorScheme = colorScheme;
+    originalLinearTextureScale = linearTextureScale;
+    originalForegroundColor[0] = foregroundColor[0];
+    originalForegroundColor[1] = foregroundColor[1];
+    originalForegroundColor[2] = foregroundColor[2];
+    originalBackgroundColor[0] = backgroundColor[0];
+    originalBackgroundColor[1] = backgroundColor[1];
+    originalBackgroundColor[2] = backgroundColor[2];
+    originalWindowWidth = savedWindowWidth;
+    originalWindowHeight = savedWindowHeight;
+    configDirty = false;
+}
+
+//
+// Restore original config values (cancel functionality)
+//
+void GUIimgui::restoreOriginalConfig()
+{
+    maintainAspectRatio = originalMaintainAspectRatio;
+    colorScheme = originalColorScheme;
+    linearTextureScale = originalLinearTextureScale;
+    foregroundColor[0] = originalForegroundColor[0];
+    foregroundColor[1] = originalForegroundColor[1];
+    foregroundColor[2] = originalForegroundColor[2];
+    backgroundColor[0] = originalBackgroundColor[0];
+    backgroundColor[1] = originalBackgroundColor[1];
+    backgroundColor[2] = originalBackgroundColor[2];
+    savedWindowWidth = originalWindowWidth;
+    savedWindowHeight = originalWindowHeight;
+    
+    // Apply the restored settings
+    applyColorScheme();
+    updateFontTextures();
+    
+    // Restore window size directly without triggering scale calculation
+    SDL_SetWindowSize(window, savedWindowWidth, savedWindowHeight);
+    
+    configDirty = false;
+}
+
+//
 // Apply texture filtering mode
 //
-void GUIimgui::applyFilterMode()
-{
-    // Set SDL2 texture filtering hint globally
-    // This affects all subsequently created textures
-    const char* filterHint = (filterMode == 0) ? "0" : "1";  // 0=nearest, 1=linear
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, filterHint);
-}
 
 //
 // Set window to a specific scale multiple
@@ -1354,9 +1423,8 @@ void GUIimgui::loadConfig()
             colorScheme = std::stoi(value);
             // Don't apply color scheme here - wait until after we load custom colors
         }
-        else if (key == "filterMode") {
-            filterMode = std::stoi(value);
-            applyFilterMode();
+        else if (key == "linearTextureScale") {
+            linearTextureScale = std::stoi(value);
         }
         else if (key == "foregroundColor") {
             // Parse "r,g,b" format
@@ -1420,7 +1488,7 @@ void GUIimgui::saveConfig()
 
     // Write rendering settings
     configFile << "[Rendering]\n";
-    configFile << "filterMode=" << filterMode << "\n";
+    configFile << "linearTextureScale=" << linearTextureScale << "\n";
     configFile << "\n";
 
     // Write color settings

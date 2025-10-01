@@ -65,12 +65,24 @@ class GUIimgui: public GUI
     int colorScheme;           // 0=Amber, 1=Green, 2=White, 3=Reverse
 
     // Rendering settings
-    int filterMode;            // 0=Nearest (sharp), 1=Linear (smooth)
+    int linearTextureScale;    // Oversampling factor for linear filtering (1-8)
 
     // Window size caching (to avoid excessive SDL calls)
     int cachedWindowWidth;
     int cachedWindowHeight;
     bool windowSizeChanged;
+    
+    // Config dirty state tracking
+    bool configDirty;
+    
+    // Original config values for cancel functionality
+    bool originalMaintainAspectRatio;
+    int originalColorScheme;
+    int originalLinearTextureScale;
+    float originalForegroundColor[3];
+    float originalBackgroundColor[3];
+    int originalWindowWidth;
+    int originalWindowHeight;
 
     // Cached scaling values (avoid recalculating when window size unchanged)
     float cachedCharScaleX;
@@ -135,9 +147,13 @@ class GUIimgui: public GUI
     // Color management
     void applyColorScheme();
     void updateFontTextures();
+    
+    // Config management
+    void markConfigDirty();
+    void saveOriginalConfig();
+    void restoreOriginalConfig();
 
     // Rendering settings
-    void applyFilterMode();
 
     // Window scaling
     void setWindowScale(int scale);
