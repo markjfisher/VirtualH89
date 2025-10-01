@@ -97,6 +97,9 @@ class GUIimgui: public GUI
     void saveConfig();
     std::string getConfigPath();
 
+    // Input handling
+    void processTextInput(SDL_TextInputEvent& textEvent);
+
     // Callback function pointers
     static tKeyboardFunc GUIKeyboardFunc;
     static tDisplayFunc  GUITimerFunc;

@@ -135,6 +135,9 @@ GUIimgui::~GUIimgui()
         }
     }
 
+    // Stop SDL text input
+    SDL_StopTextInput();
+
     // Cleanup Dear ImGui
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
@@ -218,6 +221,9 @@ void GUIimgui::InitGUI(void)
     // Setup Platform/Renderer backends - SDL2 renderer is truly cross-platform!
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
+
+    // Enable SDL text input for proper character handling (including shift modifiers)
+    SDL_StartTextInput();
 
 #ifdef __APPLE__
     // Set up event filter for macOS resize handling
@@ -616,6 +622,11 @@ void GUIimgui::handleEvents()
                 running = false;
                 break;
 
+            case SDL_TEXTINPUT:
+                // Handle text input (characters with shift modifiers already applied)
+                processTextInput(event.text);
+                break;
+
             case SDL_WINDOWEVENT:
                 if (event.window.windowID == SDL_GetWindowID(window)) {
                     if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
@@ -654,6 +665,20 @@ void GUIimgui::handleEvents()
                 processKeyboard(event.key);
                 break;
         }
+    }
+}
+
+//
+// Process text input (characters with shift modifiers already applied)
+//
+void GUIimgui::processTextInput(SDL_TextInputEvent& textEvent)
+{
+    // Get the first character from the text input
+    unsigned char h19_key = (unsigned char)textEvent.text[0];
+
+    // Send to emulation core if we have a callback and it's a valid character
+    if (GUIKeyboardFunc && h19_key != 0) {
+        GUIKeyboardFunc(h19_key);
     }
 }
 
@@ -785,10 +810,8 @@ void GUIimgui::processKeyboard(SDL_KeyboardEvent& key)
             break;
 
         default:
-            // Handle basic ASCII printable characters
-            if (key.keysym.sym >= SDLK_SPACE && key.keysym.sym <= SDLK_z) {
-                h19_key = (unsigned char)key.keysym.sym;
-            }
+            // Don't handle printable characters here - they should be handled by SDL_TEXTINPUT
+            // This prevents issues with shift modifiers not being applied correctly
             break;
     }
 
