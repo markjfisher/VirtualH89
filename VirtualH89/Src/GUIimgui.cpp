@@ -1095,10 +1095,11 @@ void GUIimgui::updateFontTextures()
     // Ensure correct filtering mode is applied to new textures
     applyFilterMode();
 
-    // Convert float colors to byte values
-    unsigned char fg_r = (unsigned char)(foregroundColor[0] * 255);
-    unsigned char fg_g = (unsigned char)(foregroundColor[1] * 255);
-    unsigned char fg_b = (unsigned char)(foregroundColor[2] * 255);
+    // Convert float colors to byte values with brightness boost for linear filtering
+    float brightness = (filterMode == 1) ? 1.3f : 1.0f;  // 30% brighter for linear filtering
+    unsigned char fg_r = (unsigned char)(std::min(255.0f, foregroundColor[0] * 255 * brightness));
+    unsigned char fg_g = (unsigned char)(std::min(255.0f, foregroundColor[1] * 255 * brightness));
+    unsigned char fg_b = (unsigned char)(std::min(255.0f, foregroundColor[2] * 255 * brightness));
 
     // Recreate all font textures with new colors
     for (int i = 0; i < 256; i++)
@@ -1109,9 +1110,14 @@ void GUIimgui::updateFontTextures()
             fontTextures[i] = nullptr;
         }
 
+        // For linear filtering, create higher resolution textures for better quality
+        int textureScale = (filterMode == 1) ? 2 : 1;  // 2x scale for linear filtering
+        int textureWidth = FONT_WIDTH * textureScale;
+        int textureHeight = FONT_HEIGHT * textureScale;
+        
         // Allocate RGBA texture data (4 bytes per pixel)
-        unsigned char* textureData = new unsigned char[FONT_WIDTH * FONT_HEIGHT * 4];
-        memset(textureData, 0, FONT_WIDTH * FONT_HEIGHT * 4);
+        unsigned char* textureData = new unsigned char[textureWidth * textureHeight * 4];
+        memset(textureData, 0, textureWidth * textureHeight * 4);
 
         // Convert 1-bit bitmap to RGBA texture with new colors
         for (int row = 0; row < FONT_HEIGHT; row++)
@@ -1121,33 +1127,42 @@ void GUIimgui::updateFontTextures()
 
             for (int col = 0; col < FONT_WIDTH; col++)
             {
-                int pixelIndex = (row * FONT_WIDTH + col) * 4;
+                bool pixel = fontByte & (1 << (7 - col));
+                
+                // Fill the scaled texture block
+                for (int sy = 0; sy < textureScale; sy++) {
+                    for (int sx = 0; sx < textureScale; sx++) {
+                        int textureRow = row * textureScale + sy;
+                        int textureCol = col * textureScale + sx;
+                        int pixelIndex = (textureRow * textureWidth + textureCol) * 4;
 
-                if (fontByte & (1 << (7 - col)))
-                {
-                    // Foreground pixel
-                    textureData[pixelIndex + 0] = fg_r;  // Red
-                    textureData[pixelIndex + 1] = fg_g;  // Green  
-                    textureData[pixelIndex + 2] = fg_b;  // Blue
-                    textureData[pixelIndex + 3] = 255;   // Alpha
-                }
-                else
-                {
-                    // Transparent pixel (background handled by clear color)
-                    textureData[pixelIndex + 0] = 0;
-                    textureData[pixelIndex + 1] = 0;
-                    textureData[pixelIndex + 2] = 0;
-                    textureData[pixelIndex + 3] = 0; // Transparent
+                        if (pixel)
+                        {
+                            // Foreground pixel
+                            textureData[pixelIndex + 0] = fg_r;  // Red
+                            textureData[pixelIndex + 1] = fg_g;  // Green  
+                            textureData[pixelIndex + 2] = fg_b;  // Blue
+                            textureData[pixelIndex + 3] = 255;   // Alpha
+                        }
+                        else
+                        {
+                            // Transparent pixel (background handled by clear color)
+                            textureData[pixelIndex + 0] = 0;
+                            textureData[pixelIndex + 1] = 0;
+                            textureData[pixelIndex + 2] = 0;
+                            textureData[pixelIndex + 3] = 0; // Transparent
+                        }
+                    }
                 }
             }
         }
 
         // Create new SDL2 texture
-        SDL_Surface* surface = SDL_CreateRGBSurface(0, FONT_WIDTH, FONT_HEIGHT, 32, 
+        SDL_Surface* surface = SDL_CreateRGBSurface(0, textureWidth, textureHeight, 32, 
                                                     0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
         if (surface) {
             SDL_LockSurface(surface);
-            memcpy(surface->pixels, textureData, FONT_WIDTH * FONT_HEIGHT * 4);
+            memcpy(surface->pixels, textureData, textureWidth * textureHeight * 4);
             SDL_UnlockSurface(surface);
 
             fontTextures[i] = SDL_CreateTextureFromSurface(renderer, surface);
