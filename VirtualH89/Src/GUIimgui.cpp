@@ -621,10 +621,13 @@ void GUIimgui::handleEvents()
                 running = false;
                 break;
 
+// disable text input for profiling, this is handled by ascii characters in processKeyboard
+#ifndef ENABLE_PROFILING
             case SDL_TEXTINPUT:
                 // Handle text input (characters with shift modifiers already applied)
                 processTextInput(event.text);
                 break;
+#endif
 
             case SDL_WINDOWEVENT:
                 if (event.window.windowID == SDL_GetWindowID(window)) {
@@ -809,8 +812,13 @@ void GUIimgui::processKeyboard(SDL_KeyboardEvent& key)
             break;
 
         default:
-            // Don't handle printable characters here - they should be handled by SDL_TEXTINPUT
-            // This prevents issues with shift modifiers not being applied correctly
+// Only handle printable characters when profiling
+// Otherwise we don't process SHIFT modifiers correctly
+#ifdef ENABLE_PROFILING
+            if (key.keysym.sym >= 32 && key.keysym.sym <= 126) {
+                h19_key = (unsigned char)key.keysym.sym;
+            }
+#endif
             break;
     }
 
