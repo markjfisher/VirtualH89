@@ -355,18 +355,18 @@ void GUIimgui::renderMenuBar()
 {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Save Config", "Ctrl+S")) {
+            if (ImGui::MenuItem("Save Config", "ALT+S")) {
                 saveConfig();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
+            if (ImGui::MenuItem("Quit", "ALT+Q")) {
                 running = false;  // Signal to exit main loop
             }
             ImGui::EndMenu();
         }
 
         if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Config...")) {
+            if (ImGui::MenuItem("Config...", "ALT+C")) {
                 showConfig = true;
             }
             ImGui::EndMenu();
@@ -686,6 +686,17 @@ void GUIimgui::processTextInput(SDL_TextInputEvent& textEvent)
     }
 }
 
+bool GUIimgui::isScalingDisabled()
+{
+    // Check if scaling should be disabled (Wayland tiled windows)
+    const char* videoDriver = SDL_GetCurrentVideoDriver();
+    if (videoDriver && strcmp(videoDriver, "wayland") == 0) {
+        Uint32 currentFlags = SDL_GetWindowFlags(window);
+        return (currentFlags & SDL_WINDOW_MAXIMIZED) != 0;
+    }
+    return false;
+}
+
 //
 // Process keyboard input and send to emulation core
 //
@@ -697,53 +708,57 @@ void GUIimgui::processKeyboard(SDL_KeyboardEvent& key)
     // Handle special key combinations first
     SDL_Keymod keymod = SDL_GetModState();
 
-    // Check for Ctrl+Q to quit
-    if (key.keysym.sym == SDLK_q && (keymod & KMOD_CTRL)) {
-        running = false;
-        return;
-    }
-
-    // Check for Ctrl+S to save config
-    if (key.keysym.sym == SDLK_s && (keymod & KMOD_CTRL)) {
-        saveConfig();
-        return;
-    }
-
-    // Quick scaling keyboard shortcuts (Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4)
-    if (keymod & KMOD_CTRL) {
-        // Check if scaling should be disabled (Wayland tiled windows)
-        bool scalingDisabled = false;
-        const char* videoDriver = SDL_GetCurrentVideoDriver();
-        if (videoDriver && strcmp(videoDriver, "wayland") == 0) {
-            Uint32 currentFlags = SDL_GetWindowFlags(window);
-            scalingDisabled = (currentFlags & SDL_WINDOW_MAXIMIZED) != 0;
+    // Use ALT key for application shortcuts
+    if (keymod & KMOD_ALT) {
+        // even though each platform has a "kill app" key, we use ALT+Q for consistency and to close resources cleanly
+        if (key.keysym.sym == SDLK_q) {
+            running = false;
+            return;
         }
 
-        if (!scalingDisabled) {
-            switch (key.keysym.sym) {
-                case SDLK_1:
-                    setWindowScale(1);
-                    return;
-                case SDLK_2:
-                    setWindowScale(2);
-                    return;
-                case SDLK_3:
-                    setWindowScale(3);
-                    return;
-                case SDLK_4:
-                    setWindowScale(4);
-                    return;
+        if (key.keysym.sym == SDLK_s) {
+            saveConfig();
+            return;
+        }
+
+        if (key.keysym.sym == SDLK_c) {
+            showConfig = true;
+            return;
+        }
+
+        if (key.keysym.sym >= SDLK_1 && key.keysym.sym <= SDLK_4) {
+            // Handle scaling shortcuts
+            if (!isScalingDisabled()) {
+                setWindowScale(key.keysym.sym - SDLK_1 + 1);
+                return;
             }
-        } else {
-            // Still consume the keypress but show a message
-            switch (key.keysym.sym) {
-                case SDLK_1:
-                case SDLK_2:
-                case SDLK_3:
-                case SDLK_4:
-                    printf("Scaling shortcut disabled: Window is tiled/maximized in Wayland\n");
-                    return;
-            }
+        }
+    }
+
+    // Handle Ctrl key combinations - convert to ASCII control characters
+    if (keymod & KMOD_CTRL) {
+        // Convert Ctrl+letter to ASCII control character (Ctrl+A=1, Ctrl+B=2, etc.)
+        if (key.keysym.sym >= SDLK_a && key.keysym.sym <= SDLK_z) {
+            h19_key = (unsigned char)(key.keysym.sym - SDLK_a + 1);
+        }
+        // Ctrl+@ = 0, Ctrl+[ = 27, Ctrl+\ = 28, Ctrl+] = 29, Ctrl+^ = 30, Ctrl+_ = 31
+        else if (key.keysym.sym == SDLK_AT) {
+            h19_key = 0;
+        }
+        else if (key.keysym.sym == SDLK_LEFTBRACKET) {
+            h19_key = 27; // ESC
+        }
+        else if (key.keysym.sym == SDLK_BACKSLASH) {
+            h19_key = 28;
+        }
+        else if (key.keysym.sym == SDLK_RIGHTBRACKET) {
+            h19_key = 29;
+        }
+        else if (key.keysym.sym == SDLK_CARET) {
+            h19_key = 30;
+        }
+        else if (key.keysym.sym == SDLK_UNDERSCORE) {
+            h19_key = 31;
         }
     }
 
@@ -941,13 +956,7 @@ void GUIimgui::renderConfigWindow()
         ImGui::Spacing();
         ImGui::Text("Quick Scale (680x540 base):");
 
-        // Check if scaling should be disabled (Wayland tiled windows)
-        const char* videoDriver = SDL_GetCurrentVideoDriver();
-        bool scalingDisabled = false;
-        if (videoDriver && strcmp(videoDriver, "wayland") == 0) {
-            Uint32 currentFlags = SDL_GetWindowFlags(window);
-            scalingDisabled = (currentFlags & SDL_WINDOW_MAXIMIZED) != 0;
-        }
+        bool scalingDisabled = isScalingDisabled();
 
         if (scalingDisabled) {
             // Show disabled buttons with explanation
@@ -978,8 +987,6 @@ void GUIimgui::renderConfigWindow()
         if (scalingDisabled) {
             ImGui::EndDisabled();
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Scaling disabled: Window is tiled/maximized in Wayland");
-        } else {
-            ImGui::TextDisabled("Tip: Use Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4 for quick scaling");
         }
 
         // Show current window info and potential issues
@@ -990,6 +997,7 @@ void GUIimgui::renderConfigWindow()
 
         ImGui::Text("Current window: %dx%d", currentWidth, currentHeight);
 
+        const char* videoDriver = SDL_GetCurrentVideoDriver();
         if (videoDriver) {
             ImGui::Text("Video driver: %s", videoDriver);
             if (strcmp(videoDriver, "wayland") == 0) {

@@ -108,6 +108,7 @@ class GUIimgui: public GUI
 
     // Input handling
     void processTextInput(SDL_TextInputEvent& textEvent);
+    bool isScalingDisabled();
 
     // Callback function pointers
     static tKeyboardFunc GUIKeyboardFunc;
