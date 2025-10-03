@@ -126,9 +126,10 @@ cpuThreadFunc(void* v)
 //	option		owner
 //	-g <gui>	main.cpp
 //	-h		main.cpp (handled by early check, not getopt)
+//	-l		StdioProxyConsole.cpp
 //	-q		main.cpp
 //
-const char* getopts = "g:q";
+const char* getopts = "g:lq";
 
 #if defined(__GUIwx__)
 int
